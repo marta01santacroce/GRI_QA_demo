@@ -1,0 +1,16 @@
+services:
+  db:
+    env_file:
+      - .env
+    container_name: $DATABASE_CONTAINER_NAME
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    ports:
+     - 5432:5432
+
+volumes:
+  db_data:
