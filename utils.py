@@ -36,7 +36,7 @@ def init_args():
                         help='integration scalar for syntactic features. Only usable with --use_ensemble')
     parser.add_argument('-f', '--load_query_from_file', type=str, required=False, default="", 
                         help='path of the GRI/Description file')
-    parser.add_argument('-k', '--k', type=int, required=False, default=20,
+    parser.add_argument('-k', '--k', type=int, required=False, default=5,
                         help='number of top-k results to consider')
 
     args = vars(parser.parse_args())

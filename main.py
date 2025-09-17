@@ -1,4 +1,3 @@
-from dotenv import load_dotenv
 from utils import init_args
 from runnable import Runnable
 from table_extraction import UnstructuredTableExtractor
@@ -9,8 +8,6 @@ import json
 from itertools import islice
 from bs4 import BeautifulSoup
 
-
-load_dotenv()
 
 if __name__ == "__main__":
     
@@ -44,7 +41,8 @@ if __name__ == "__main__":
         gri_code_to_page = {}
         tables_as_html = set()
 
-        for gri_code, description in islice(data.items(),0,3):
+        for gri_code, description in islice(data.items(),3,8): #dal 4 all'8 GRI
+          
           if gri_code not in gri_code_to_page.keys():
             gri_code_to_page[gri_code] = []
 
@@ -54,7 +52,7 @@ if __name__ == "__main__":
 
           ute = UnstructuredTableExtractor("yolox", "hi_res")
 
-          for doc in tqdm(s[:args["k"]]): #keeps only the top k pages with the highest score, where k is specified in the Python command (default = 20) 
+          for doc in tqdm(s[:args["k"]]): #keeps only the top k pages with the highest score, where k is specified in the Python command (default = 5) 
 
             #print("\n\nDEB doc: "+ str(doc))
 

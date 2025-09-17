@@ -15,6 +15,7 @@ from langchain_core.documents import Document
 from langchain_postgres import PGVector
 from langchain_postgres.vectorstores import PGVector
 from connectors import PgVectorConnector
+from sklearn.metrics.pairwise import cosine_similarity
 
 logging.basicConfig(filename="./log/bper.log", level=logging.INFO)
 logger = logging.getLogger("bper.vector_store")
@@ -156,7 +157,7 @@ class CustomTFIDFRetriever(TFIDFRetriever):
 
     class Config:
         arbitrary_types_allowed = True
-    
+    '''
     def _get_relevant_documents(
             self, query: str, *, run_manager: CallbackManagerForRetrieverRun
         ) -> List[Document]:
@@ -171,7 +172,7 @@ class CustomTFIDFRetriever(TFIDFRetriever):
         scores = sorted(results)[-self.k :][::-1]
         return_docs = [self.docs[i] for i in results.argsort()[-self.k :][::-1]]
         return return_docs, scores
-
+    '''
 
 class SparseStoreHandler(Handler):
     def __init__(self, args):
@@ -237,14 +238,24 @@ class SparseStoreHandler(Handler):
         retriever = self.switch_model[self.model_name].from_documents(docs_lowered)
 
         retriever.k = k
-        results, scores = retriever.get_relevant_documents(query)
+        #results, scores = retriever.get_relevant_documents(query)
+        results = retriever.invoke(query)
 
         if with_scores:
+            query_vec = retriever.vectorizer.transform([query])
+            results_array = cosine_similarity(retriever.tfidf_array, query_vec).reshape((-1,))
+            scores = sorted(results_array)[-retriever.k:][::-1]
+
             result_with_scores = []
             for result, score in zip(results, scores):
                 result_with_scores.append((result, score))
             results = result_with_scores
-
+            '''
+            result_with_scores = []
+            for result, score in zip(results, scores):
+                result_with_scores.append((result, score))
+            results = result_with_scores
+            '''
         return results
 
 class EnsembleRetrieverHandler(SparseStoreHandler, VectorStoreHandler):
