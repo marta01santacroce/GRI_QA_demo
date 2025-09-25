@@ -5,6 +5,7 @@ from vector_store import VectorStoreHandler, SparseStoreHandler, EnsembleRetriev
 logging.basicConfig(filename="./log/bper.log", level=logging.INFO)
 logger = logging.getLogger("bper.main")
 
+
 class Runnable:
 
     def __init__(self, args):
@@ -29,6 +30,9 @@ class Runnable:
         self.args = args
 
     def run(self):
+
+        similar_docs = None
+
         if self.args["use_dense"]:
             self.vsh.get_vector_store()
 
@@ -39,7 +43,7 @@ class Runnable:
                 self.vsh.load_docs_in_vector_store(contents)
             elif self.args["use_sparse"]:
                 self.ssh.load_docs_in_sparse_store(contents)
-            similar_docs = None
+            # similar_docs = None
         elif self.args["query"]:
             filters = (("source", self.args["pdf"]), ("model_name", self.args["model_name"]))
             if self.args["use_dense"]:
