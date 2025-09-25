@@ -9,6 +9,7 @@ from datetime import datetime
 logging.basicConfig(filename="./log/bper.log", level=logging.INFO)
 logger = logging.getLogger("bper.dataprocessor")
 
+
 class PageProcessor:
     """
     This class extracts textual contents from pdf files.
@@ -22,10 +23,10 @@ class PageProcessor:
     def _get_reader(self, pdf_path):
         if not os.path.exists(pdf_path):
             raise ValueError(f"{pdf_path} is non existent")
-        
+
         loader = PyPDFLoader(pdf_path)
         try:
-           data = loader.load_and_split()
+            data = loader.load_and_split()
         except TypeError as e:
             logger.warning(f"Chunking failed for {pdf_path} with the following error: {e}")
             data = []
@@ -50,4 +51,3 @@ class PageProcessor:
             data.extend(docs)
 
         return data
-    
