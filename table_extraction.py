@@ -7,8 +7,8 @@ from functools import lru_cache
 
 class UnstructuredTableExtractor:
     def __init__(self, model_name, strategy):
-        self.model_name = model_name #"yolo-x"
-        self.strategy = strategy # "hi-res"
+        self.model_name = model_name  # "yolo-x"
+        self.strategy = strategy  # "hi-res"
 
     @lru_cache
     def cached_partition_pdf(self, filename, strategy, model_name):
@@ -19,7 +19,8 @@ class UnstructuredTableExtractor:
             model_name=model_name
         )
 
-    def extract_page(self, pdf_path, page_num):
+    @staticmethod
+    def extract_page(pdf_path, page_num):
         reader = PdfReader(pdf_path)
         writer = PdfWriter()
         writer.add_page(reader.pages[page_num])  # Page number adjustment
@@ -38,7 +39,7 @@ class UnstructuredTableExtractor:
 
             page = doc.metadata["page"]
 
-            #temp_pdf_path = self.extract_page(f"{pdf_name}", int(page))
+            # temp_pdf_path = self.extract_page(f"{pdf_name}", int(page))
             try:
                 temp_pdf_path = self.extract_page(f"{pdf_name}", int(page))
             except:
