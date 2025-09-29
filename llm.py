@@ -8,7 +8,7 @@ import gradio as gr
 
 # setup tracing
 tracer_provider = register(
-    project_name="prova_marta",
+    project_name="griqa_demo",
     endpoint="http://localhost:6006/v1/traces",
 )
 OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
@@ -119,52 +119,95 @@ def check(folder_path, gri_code_list_path, pdf_basename):
     return new_metadata_path
 
 
-def formatted(folder_path, pdf_basename):
+def formatted(folder_path, pdf_basename, chatbot=False):
     """
     Riformatta i CSV nella cartella folder_path/pdf_basename tramite chiamata a LLM
     """
 
-    folder_path = os.path.join(folder_path, pdf_basename)
-    csvs = [f for f in os.listdir(str(folder_path)) if f.endswith(".csv")]
+    if chatbot:
+        folder_path = os.path.join(str(folder_path), pdf_basename, "verbal_questions")
+        metadata_formatted_path = os.path.join(folder_path, "metadata_formatted.json")
 
-    if csvs:
+        # Se non esiste metadata_formatted.json, lo creo con lista vuota
+        if not os.path.exists(metadata_formatted_path):
+            with open(metadata_formatted_path, "w", encoding="utf-8") as f:
+                json.dump({"formatted_files": []}, f, indent=2)
 
-        for csv_file in csvs:
-            csv_path = os.path.join(str(folder_path), csv_file)
+        # Carico contenuto esistente
+        with open(metadata_formatted_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
 
-            # Leggi il CSV originale
-            with open(csv_path, "r", encoding="utf-8") as f:
-                csv_content = f.read()
+        formatted_files = set(metadata.get("formatted_files", []))
+        print("DEBUG: formatted files:", formatted_files)
+    else:
+        folder_path = os.path.join(folder_path, pdf_basename)
+        metadata_formatted_path = None
+        formatted_files = set()
 
-            prompt = f"""
-            You have received a CSV with automatically extracted data. 
-            Your task is to:
-            1. Reformat the table consistently, making sure all rows have the same number of columns.
-            2. Correct any extraction errors (misplaced values, merged cells).
-            3. Improve readability: standardize headers and align numeric and text values.
-            4. Do not remove any rows.
-            5. Return only the final CSV content, without any additional explanations.
-            6. Use ';' as the column separator.
-    
-            Here is the CSV to process:
-    
-            {csv_content}
-            """
+    # Tutti i CSV nella cartella
+    csvs = [f for f in os.listdir(folder_path) if f.endswith(".csv")]
+    print("DEBUG: csvs in folder:", csvs)
 
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0
-            )
+    # Filtra quelli non ancora formattati
+    csvs_to_format = [f for f in csvs if f not in formatted_files]
+    print("DEBUG: csvs da formattare:", csvs_to_format)
 
-            corrected_csv = response.choices[0].message.content
+    if not csvs_to_format:
+        print("DEBUG: Nessun nuovo CSV da formattare.")
+        return
 
-            # Rimuove eventuali backtick iniziali e finali
-            corrected_csv = corrected_csv.strip("`").strip()
+    for csv_file in csvs_to_format:
+        csv_path = os.path.join(folder_path, csv_file)
 
-            # Salva il CSV corretto sovrascrivendo il file originale
-            with open(csv_path, "w", encoding="utf-8") as f:
-                f.write(corrected_csv)
+        # Leggi il CSV originale
+        with open(csv_path, "r", encoding="utf-8") as f:
+            csv_content = f.read()
+
+
+
+        prompt = f"""
+         
+        You are provided with a CSV file automatically extracted from a table. Your task is to reformat it to obtain a rectangular table (all rows have the same number of columns). 
+        Instructions 
+        - Take the maximum number of fields that a row in the initial CSV has and correct the formatting by bringing all rows to that length.
+         -Use ; as the column separator.
+         - If a row has missing cells, fill then with NaN.
+         - Keep numeric values as they are (including negative percentages).
+         - Correct any extraction errors (misplaced values, incorrect indentation, damaged headers). 
+        - The output should be clean CSV content only. 
+        - Improve readability: standardise headers and align numeric and text values. 
+        - Do not remove any rows.
+        
+        Return only the final CSV content, without any additional explanations.
+
+        Here is the CSV to process:
+
+        {csv_content}
+
+        """
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+
+        corrected_csv = response.choices[0].message.content
+
+        # Rimuove eventuali backtick iniziali e finali
+        corrected_csv = corrected_csv.strip("`").strip()
+
+        # Salva il CSV corretto sovrascrivendo il file originale
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write(corrected_csv)
+
+        print(f"DEBUG: CSV {csv_file} formattato e salvato.")
+
+        # Aggiorna metadata_formatted.json
+        if metadata_formatted_path:
+            formatted_files.add(csv_file)
+            with open(metadata_formatted_path, "w", encoding="utf-8") as f:
+                json.dump({"formatted_files": sorted(formatted_files)}, f, indent=2)
 
 
 def add_user_message(chatbot_history, chat_input_data):
@@ -187,7 +230,8 @@ def add_user_message(chatbot_history, chat_input_data):
 
 
 def format_for_openai(chat_history):
-    messages = [{"role": "system", "content": "Sei un assistente esperto di sostenibilità e standard GRI. Questa è la storia passata della chat:"}]
+    messages = [{"role": "system",
+                 "content": "Sei un assistente esperto di sostenibilità e standard GRI. Questa è la storia passata della chat:"}]
     for entry in chat_history:
         # Se è tupla (user_msg, bot_msg) tipica di Gradio Chatbot
         if isinstance(entry, tuple) or isinstance(entry, list):
