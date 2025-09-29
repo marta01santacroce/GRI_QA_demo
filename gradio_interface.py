@@ -9,6 +9,15 @@ import llm
 import pandas as pd
 import shutil
 import gradio_actions
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain.schema import HumanMessage
+
+# from sentence_transformers import SentenceTransformer, util
+
+# model = SentenceTransformer('all-MiniLM-L6-v2')  # to calculate the cosine similarity between two questions and avoid re-extracting the same tables for identical questions written in different ways
+
+# Inizializza la memoria della conversazione
+message_history = ChatMessageHistory()
 
 server_host = "155.185.48.176"  # se lavoro sul server unimore, sennò server_host = 'localhost'
 
@@ -142,30 +151,26 @@ def upload_and_process_files(files):
     return "\n\n".join(results)
 
 
-def handle_chat_with_pdf(chatbot, chat_input_data, docs_list):
+def handle_chat_with_pdf(chat_history, chat_input_data, docs_list):
     """
     Gestisce una domanda dell'utente con file PDF selezionati.
     """
-    # print("\nDEBUG docs_list:", docs_list)
     user_message = chat_input_data.get("text", "").strip()
-    # print("DEBUG user_message:", user_message)
 
-    if chat_input_data is None or user_message == '':
-        return [{"role": "assistant", "content": "⚠️ No input received from User."}]
+    if len(docs_list) == 0:
+        return chat_history + [{"role": "assistant", "content": "⚠️ No documents selected."}]
+
+    if user_message == '':
+        return chat_history + [{"role": "assistant", "content": "⚠️ No input received from User."}]
 
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
-
-    if len(docs_list) == 0:
-        return [{"role": "assistant", "content": "⚠️ No documents selected."}]
 
     context = ""
 
     for file in docs_list:
 
         pdf_name = os.path.join(os.path.abspath(os.getcwd()), "reports", file + ".pdf")
-
-        # print("DEBUG pdf_name:", pdf_name)
 
         try:
             subprocess.run(
@@ -174,6 +179,8 @@ def handle_chat_with_pdf(chatbot, chat_input_data, docs_list):
             )
         except subprocess.CalledProcessError as e:
             return [{"role": "assistant", "content": f"⚠️ Error during PDF processing:\n{e.stderr}"}]
+
+        llm.formatted(folder_path=os.path.join(".", "table_dataset"), pdf_basename=file, chatbot=True)
 
         # Recupero metadata.json
         metadata_path = os.path.join("table_dataset", file, "verbal_questions", "metadata.json")
@@ -190,20 +197,23 @@ def handle_chat_with_pdf(chatbot, chat_input_data, docs_list):
                 for page, num in refs:
                     csv_file = os.path.join("table_dataset", file, "verbal_questions", f"{page}_{num}.csv")
                     if os.path.exists(csv_file):
-                        df = pd.read_csv(csv_file)
+                        try:
+                            df = pd.read_csv(csv_file, sep=';')
+                        except Exception:
+                            print("DEBUG eccezione file: ", csv_file)
+                            continue
+
                         csv_texts.append(f"# Page {page}, Table {num}\n")
                         csv_texts.append(df.to_csv(index=False))
+                        print("DEBUG: csv file: ", csv_file)
 
         if not csv_texts:
-            # return [{"role": "assistant", "content": f"❌ No table found for your query for file selected {file}"}]
             csv_texts = f"\nNo table found for your query for file selected {file}\n"
 
         # Costruisco messaggi per OpenAI
         tables_str = "\n\n".join(csv_texts)  # unisci tutte le tabelle trovate
         header = f"File name: {file}\n"
         context += f"{header}\n\n{tables_str}\n---\n"
-
-        # print("\nDEBUG context:", context)
 
     message = [
         messages[0],  # system invariato
@@ -216,14 +226,14 @@ def handle_chat_with_pdf(chatbot, chat_input_data, docs_list):
         }
     ]
 
-    # print("\nDEBUG message:", message)
-
     response = llm.ask_openai(message)
 
-    return [
-        {"role": "user", "content": user_message},
+    # Appendi la nuova risposta alla chat esistente
+    new_chat_history = chat_history + [
         {"role": "assistant", "content": response}
     ]
+
+    return new_chat_history
 
 
 with gr.Blocks() as chatbot_ui:
@@ -239,27 +249,49 @@ with gr.Blocks() as chatbot_ui:
                 type="messages",
                 min_height=600,
                 max_height=600,
-                avatar_images=(None, "./images/icon_chatbot.png")
+                avatar_images=(None, "./images/icon_chatbot.png"),
+                show_copy_button=True,
+                show_copy_all_button=True,
+                group_consecutive_messages=False
             )
 
             chat_input = gr.MultimodalTextbox(
+                elem_id='chat_input',
                 interactive=True,
                 placeholder="Enter question for the selected file...",
                 show_label=False,
-                sources="microphone"
+                sources="microphone",
             )
 
         # Colonna destra → Lista file interrogabili
         with gr.Column(scale=1):
             docs_list = gr.CheckboxGroup(
+                elem_id="docs_list",
                 choices=gradio_actions.get_docs_from_db(),  # qui li carichi dal DB
                 label="Seleziona documenti da interrogare",
-                value=[]
+                value=[],
+                interactive=True
             )
 
 
     def clear_textbox():
         return {"text": ""}
+
+    # Disabilita le checkbox quando l'utente invia
+    def disable_docs():
+        return gr.update(interactive=False)
+
+    # Riabilita le checkbox quando il bot ha finito
+    def enable_docs():
+        return gr.update(interactive=True)
+
+    # Disabilita il textbox quando l'utente invia
+    def disable_textbox():
+        return gr.update(interactive=False)
+
+    # Riabilita il textbox quando il bot ha finito
+    def enable_textbox():
+        return gr.update(interactive=True)
 
 
     # Invia messaggio utente
@@ -269,11 +301,33 @@ with gr.Blocks() as chatbot_ui:
         outputs=[chatbot, chat_input, chat_input]
     )
 
+    # Subito dopo l’invio → disabilita docs_list
+    chat_msg.then(
+        disable_docs,
+        outputs=[docs_list]
+    )
+    # Subito dopo l’invio → disabilita textbox
+    chat_msg.then(
+        disable_textbox,
+        outputs=[chat_input]
+    )
+
     # Bot risponde usando anche la selezione dei documenti
     bot_msg = chat_msg.then(
         handle_chat_with_pdf,
         inputs=[chatbot, chat_input, docs_list],
         outputs=[chatbot]
+    )
+
+    # Riabilita le checkbox quando il bot ha finito
+    bot_msg.then(
+        enable_docs,
+        outputs=[docs_list]
+    )
+    # Riabilita il textbox quando il bot ha finito
+    bot_msg.then(
+        enable_textbox,
+        outputs=[chat_input]
     )
 
     # Pulizia textbox
@@ -343,6 +397,10 @@ with gr.Blocks() as process_file_ui:
         fn=gradio_actions.refresh_pdf_folders,
         inputs=[],
         outputs=pdf_dropdown
+    ).then(
+        fn=gradio_actions.update_docs_list,
+        inputs=[],
+        outputs=docs_list
     )
 
     clear_button.click(
@@ -350,7 +408,6 @@ with gr.Blocks() as process_file_ui:
         inputs=[],
         outputs=pdf_input
     )
-
 
 if __name__ == "__main__":
     # Imposta la cartella da servire
