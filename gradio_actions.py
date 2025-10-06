@@ -28,6 +28,9 @@ def refresh_pdf_folders():
     folders = list_pdf_folders()
     return gr.update(choices=folders, value=folders[0] if folders else None)
 
+def refresh_docs_list():
+    choices = get_docs_from_db()
+    return gr.update(choices=choices, value=[])
 
 # funzione che elenca le cartelle disponibili in table_dataset
 def list_pdf_folders():
@@ -66,7 +69,7 @@ def load_csv(pdf_basename, csv_filename):
     if not os.path.exists(path):
         return gr.update(value=pd.DataFrame(), visible=False)
 
-    return gr.update(value=pd.read_csv(path, sep=';', on_bad_lines='warn', engine='python'), visible=True)
+    return gr.update(value=pd.read_csv(path, sep=';', on_bad_lines='warn', engine='python', dtype=str), visible=True)
 
 
 # funzione che salva il csv modificato

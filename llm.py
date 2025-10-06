@@ -170,12 +170,13 @@ def formatted(folder_path, pdf_basename, chatbot=False):
         You are provided with a CSV file automatically extracted from a table. Your task is to reformat it to obtain a rectangular table (all rows have the same number of columns). 
         Instructions 
         - Take the maximum number of fields that a row in the initial CSV has and correct the formatting by bringing all rows to that length.
-         -Use ; as the column separator.
-         - If a row has missing cells, fill then with NaN.
-         - Keep numeric values as they are (including negative percentages).
-         - Correct any extraction errors (misplaced values, incorrect indentation, damaged headers). 
+        - Use ; as the column separator.
+        - If a row has missing cells in a row, fill then with NaN.
+        - Keep numeric values as they are (including negative percentages).
+        - Correct any extraction errors (misplaced values, incorrect indentation, damaged headers). 
         - The output should be clean CSV content only. 
         - Improve readability: standardise headers and align numeric and text values. 
+        - Standardize headers: do not create duplicate column names; rename automatically if needed for clarity.
         - Do not remove any rows.
         
         Return only the final CSV content, without any additional explanations.
@@ -257,3 +258,5 @@ def ask_openai(messages):
         return response.choices[0].message.content.strip()
     except Exception as e:
         return f"⚠️ Errore durante la chiamata a OpenAI: {str(e)}"
+
+

@@ -7,6 +7,7 @@ import csv
 import json
 from itertools import islice
 from bs4 import BeautifulSoup
+import re
 
 if __name__ == "__main__":
 
@@ -35,6 +36,9 @@ if __name__ == "__main__":
             dir_name = os.path.splitext(base_name)[0]
 
             args["pdf"] = file_name
+
+            metadata_path = os.path.join("table_dataset", dir_name)
+
             gri_code_to_page = {}
             tables_as_html = set()
 
@@ -72,16 +76,15 @@ if __name__ == "__main__":
                     rows.append(cells)
 
                 # Assicurati che la cartella esista
-                if not os.path.exists(f"table_dataset/{dir_name}"):
-                    os.makedirs(f"table_dataset/{dir_name}", exist_ok=True)
+                if not os.path.exists(metadata_path):
+                    os.makedirs(metadata_path, exist_ok=True)
 
                 # Salva in CSV
-                with open(f'table_dataset/{dir_name}/{str(table_html[-2])}_{str(table_html[-1])}.csv',
-                          mode='w', newline='', encoding='utf-8') as file:
+                with open(os.path.join(metadata_path, f"{str(table_html[-2])}_{str(table_html[-1])}.csv"), mode='w', newline='', encoding='utf-8') as file:
                     writer = csv.writer(file)
                     writer.writerows(rows)
 
-            with open(f'table_dataset/{dir_name}/metadata.json', 'w') as json_file:
+            with open(os.path.join(metadata_path, "metadata.json"), 'w',encoding='utf-8') as json_file:
                 json.dump(gri_code_to_page, json_file, indent=4)
 
     elif len(args["query"]) > 0:
@@ -92,6 +95,7 @@ if __name__ == "__main__":
             file_names = [args["pdf"]]
         else:
             raise ValueError(f"wrong file name")
+
         for file_name in file_names:
             splitted_file_name = file_name.split(".")
             if splitted_file_name[-1] != "pdf":
@@ -100,69 +104,50 @@ if __name__ == "__main__":
             file_path = args["pdf"]
             base_name = os.path.basename(file_path)
             dir_name = os.path.splitext(base_name)[0]
-
             args["pdf"] = file_name
+
             question_to_page = {}
             tables_as_html = set()
 
-            if args["query"] not in question_to_page.keys():
-                question_to_page[args["query"]] = []
+            question_to_page[args["query"]] = []
+            csvs = [f for f in os.listdir(os.path.join("table_dataset", dir_name)) if f.endswith(".csv")]
+
+            matched_csvs = []
 
             s = r.run()
 
-            ute = UnstructuredTableExtractor("yolox", "hi_res")
-
             for doc in tqdm(s[:args["k"]]):  # keeps only the top k pages with the highest score, where k is specified in the Python command (default = 5)
+                page_str = str(doc.metadata["page"])
+                for csv_file in csvs:
+                    p = int(re.search(r"(\d+)_\d+\.csv$", csv_file).group(1))
+                    if page_str == str(p):
+                        matched_csvs.append(os.path.join(os.path.join("table_dataset", dir_name), csv_file))
+                        i = int(re.search(r"_(\d+)\.csv$", csv_file).group(1))
+                        question_to_page[args["query"]].append((p, i))
 
-                tables = ute.extract_table_unstructured([doc])  # extract tables
+            metadata_path = f'table_dataset/{dir_name}/verbal_questions_metadata.json'
 
-                for i, table in enumerate(tables):
-                    tables_as_html.add((table[0].metadata.text_as_html, doc.page_content, doc.metadata["page"], i))
-                    question_to_page[args["query"]].append((doc.metadata["page"], i))
+            # Assicura che la cartella padre esista
+            os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
 
-            # print("\nDEBUG question_to_page: ", question_to_page)
+            # Assicura che il file esista
+            if not os.path.exists(metadata_path):
+                with open(metadata_path, "w", encoding="utf-8") as f:
+                    f.write("{}")  # inizializza ad esempio con un JSON vuoto
+                    existing_data = {}
 
-            for table_html in tables_as_html:
-
-                # table_html[0] contiene il testo della tabella estratta (HTML)
-                raw_table_text = table_html[0]
-
-                soup = BeautifulSoup(raw_table_text, "html.parser")
-
-                # Trova tutte le righe della tabella
-                rows = []
-                for tr in soup.find_all("tr"):
-                    # Ogni riga può avere sia <td> che <th>
-                    cells = [cell.get_text(strip=True) for cell in tr.find_all(["td", "th"])]
-                    rows.append(cells)
-
-                # Assicurati che la cartella esista
-                if not os.path.exists(f"table_dataset/{dir_name}/verbal_questions"):
-                    os.makedirs(f"table_dataset/{dir_name}/verbal_questions", exist_ok=True)
-
-                # Salva in CSV
-                with open(f'table_dataset/{dir_name}/verbal_questions/{str(table_html[-2])}_{str(table_html[-1])}.csv',
-                          mode='w', newline='', encoding='utf-8') as file:
-                    writer = csv.writer(file)
-                    writer.writerows(rows)
-
-            metadata_path = f'table_dataset/{dir_name}/verbal_questions/metadata.json'
-
-            if os.path.exists(metadata_path):
+            else:
                 with open(metadata_path, 'r') as json_file:
                     try:
                         existing_data = json.load(json_file)
                     except json.JSONDecodeError:
                         existing_data = {}  # file vuoto o corrotto → inizializza dict vuoto
 
-            else:
-                existing_data = {}
-
-            # 2. Aggiorna con i nuovi dati
+            # Aggiorna con i nuovi dati
             existing_data.update(question_to_page)  # se vuoi unione di dict
 
-            # 3. Riscrivi tutto
-            with open(metadata_path, "w") as json_file:
+            # Riscrivi tutto
+            with open(metadata_path, "w", encoding='utf-8') as json_file:
                 json.dump(existing_data, json_file, indent=4)
 
     else:
