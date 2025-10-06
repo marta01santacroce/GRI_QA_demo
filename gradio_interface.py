@@ -9,38 +9,51 @@ import llm
 import pandas as pd
 import shutil
 import gradio_actions
-from langchain_community.chat_message_histories import ChatMessageHistory
-from langchain.schema import HumanMessage
-
-# from sentence_transformers import SentenceTransformer, util
-
-# model = SentenceTransformer('all-MiniLM-L6-v2')  # to calculate the cosine similarity between two questions and avoid re-extracting the same tables for identical questions written in different ways
-
-# Inizializza la memoria della conversazione
-message_history = ChatMessageHistory()
+import markdown2
+import build_summary_company
+from gradio_toggle import Toggle
 
 server_host = "155.185.48.176"  # se lavoro sul server unimore, sennò server_host = 'localhost'
 
-messages = [{"role": "system",
-             "content": "You are an experienced assistant in sustainability and GRI standards. "
-                        "You are helping the user understand the data extracted from PDFs. "
-                        "Instructions: "
-                        "- Answer clearly, concisely and succinctly. "
-                        "- Use the data from the tables inside the context. "
-                        "- If you cannot find the answer, say so clearly."
-                        "- Report the row and cell you used for the answer (from the formatting of the CSV) and the PAGE and NUMBER of the table (extracted from the context)"
-             },
-            {"role": "user",
-             "content":
-                 "Here are the name of the file and the relevant context like a table in csv with at the end the page and the number of table:\n---\n{context}\n---\n"
-                 "Now, answer the following question based strictly on the context.\n\nQuestion: {user_message}"
-             },
-            ]
+messages = [
+    {"role": "system",
+     "content": (
+         "You are an experienced assistant in sustainability and GRI standards. "
+         "You are helping the user understand the data extracted from PDFs. "
+         "Instructions: "
+         "- Think step by step through the information before answering (use reasoning internally). "
+         "- Answer clearly, concisely and succinctly. "
+         "- Use only the data from the tables inside the provided context. "
+         "- If you cannot find the answer, say so clearly. "
+         "- Report the row and cell you used for the answer (from the CSV format) and indicate the PAGE and NUMBER of the table (from the context). "
+         "- Do not explain your reasoning process; just give the final answer and required details."
+     )},
+    {"role": "user",
+     "content": (
+         "Here are the name of the file and the relevant context like a table in csv with at the end the page and the number of table:\n---\n{context}\n---\n"
+         "Now, answer the following question based strictly on the context.\n\nQuestion: {user_message}"
+     )}
+]
 
 
 def clear_all():
     # csv_group.visible = False
     return None
+
+
+def load_companies_with_summary(companies_name, base_path="./table_dataset"):
+    companies_data = {}
+
+    for name in companies_name:
+        summary_path = os.path.join(base_path, name, "summary.txt")
+        if os.path.exists(summary_path):
+            with open(summary_path, "r", encoding="utf-8") as f:
+                summary_text = f.read().strip()
+        else:
+            summary_text = ""
+        companies_data[name] = summary_text
+
+    return companies_data
 
 
 def upload_and_process_files(files):
@@ -148,25 +161,47 @@ def upload_and_process_files(files):
 
         results.append("\n".join(output_lines))
 
+        build_summary_company.build_summary(pdf_basename)
+
     return "\n\n".join(results)
 
 
-def handle_chat_with_pdf(chat_history, chat_input_data, docs_list):
+def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_value):
     """
     Gestisce una domanda dell'utente con file PDF selezionati.
     """
     user_message = chat_input_data.get("text", "").strip()
 
     if len(docs_list) == 0:
-        return chat_history + [{"role": "assistant", "content": "⚠️ No documents selected."}]
+        response = "⚠️ No documents selected."
+        new_chat_history = chat_history + [
+            {"role": "assistant", "content": response}
+        ]
+        save_chat_and_toggle(new_chat_history, select_pot_value)
+        return new_chat_history
 
     if user_message == '':
-        return chat_history + [{"role": "assistant", "content": "⚠️ No input received from User."}]
+        response =  "⚠️ No input received from User."
+        new_chat_history = chat_history + [
+            {"role": "assistant", "content": response}
+        ]
+        save_chat_and_toggle(new_chat_history, select_pot_value)
+        return new_chat_history
 
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
 
     context = ""
+
+    # Se il toggle è attivo → comportamento alternativo per ora non fa nulla se non stampare a video una frase
+    if select_pot_value:
+        response = "🧠 PoT attivo"
+        new_chat_history = chat_history + [
+            {"role": "assistant", "content": response}
+        ]
+        save_chat_and_toggle(new_chat_history, select_pot_value)
+        return new_chat_history
+
 
     for file in docs_list:
 
@@ -180,10 +215,8 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list):
         except subprocess.CalledProcessError as e:
             return [{"role": "assistant", "content": f"⚠️ Error during PDF processing:\n{e.stderr}"}]
 
-        llm.formatted(folder_path=os.path.join(".", "table_dataset"), pdf_basename=file, chatbot=True)
-
         # Recupero metadata.json
-        metadata_path = os.path.join("table_dataset", file, "verbal_questions", "metadata.json")
+        metadata_path = os.path.join("table_dataset", file, "verbal_questions_metadata.json")
         if not os.path.exists(metadata_path):
             return [{"role": "assistant", "content": f"⚠️ No metadata.json found for {file}"}]
 
@@ -195,7 +228,7 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list):
         for q, refs in metadata.items():
             if q.strip().lower() == user_message.strip().lower():
                 for page, num in refs:
-                    csv_file = os.path.join("table_dataset", file, "verbal_questions", f"{page}_{num}.csv")
+                    csv_file = os.path.join("table_dataset", file, f"{page}_{num}.csv")
                     if os.path.exists(csv_file):
                         try:
                             df = pd.read_csv(csv_file, sep=';')
@@ -208,7 +241,7 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list):
                         print("DEBUG: csv file: ", csv_file)
 
         if not csv_texts:
-            csv_texts = f"\nNo table found for your query for file selected {file}\n"
+            context = f"No table found for your query for file selected {file}"
 
         # Costruisco messaggi per OpenAI
         tables_str = "\n\n".join(csv_texts)  # unisci tutte le tabelle trovate
@@ -233,10 +266,139 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list):
         {"role": "assistant", "content": response}
     ]
 
+    save_chat_and_toggle(new_chat_history, select_pot_value)
     return new_chat_history
 
 
-with gr.Blocks() as chatbot_ui:
+def make_card_html(company_name, summary_text):
+    return f"""
+    <div style="
+        border: 1px solid #6bff93; /* bordo verde chiaro */
+        border-radius: 10px;
+        display: flex;
+        flex-direction: column;
+        height: 300px; /* altezza uniforme delle card */
+        overflow: hidden; /* impedisce che il contenuto esca */
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+    ">
+        <!-- Header della card -->
+        <div style="
+            background-color: #11bd67; /* verde header */
+            color: #000000; /* testo nero */
+            padding: 10px;
+            text-align: center;
+            font-weight: bold;
+            flex-shrink: 0;
+            border-radius: 10px 10px 0 0; /* arrotonda solo angoli superiori */
+        ">
+            {company_name}
+        </div>
+
+        <!-- Contenuto scrollabile -->
+        <div style="
+            padding: 10px;
+            overflow-y: auto;
+            flex: 1;
+            font-size: 14px;
+            text-align: left;
+            color: black;
+            max-width: 100%;
+            overflow-x: hidden;
+        ">
+            {markdown2.markdown(summary_text)}
+        </div>
+    </div>
+    """
+
+
+def add_cards(files):
+    """Aggiunge le card relative ai file appena caricati e ricarica la vista dalle risorse sul disco/DB."""
+    if not files:
+        return render_cards()
+
+    # Eventualmente fai qualche operazione sui nuovi file (es: generare summary subito)
+    new_names = [os.path.splitext(os.path.basename(f.name))[0] for f in files]
+    for name in new_names:
+        try:
+            # Se vuoi obbligare la creazione del summary subito, decommenta:
+            # build_summary_company.build_summary(name)
+            pass
+        except Exception:
+            pass
+
+    # Ricostruisci le cards leggendo lo stato aggiornato dal DB/filesystem
+    return render_cards()
+
+
+def render_cards_from_dict(companies_dict):
+    cards_html_content = "".join(make_card_html(name, summary) for name, summary in companies_dict.items())
+    return f"""
+    <div style="
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        gap: 15px;
+        max-height: 80vh;
+        overflow-y: auto;
+        padding-right: 10px;
+        max-width: 100%;
+        overflow-x: hidden;
+    ">
+        {cards_html_content}
+    </div>
+    """
+
+
+def render_cards():
+    # Rilegge la lista attuale di documenti dalla sorgente (DB / filesystem)
+    companies = gradio_actions.get_docs_from_db()
+    companies_dict = load_companies_with_summary(companies)
+    return render_cards_from_dict(companies_dict)
+
+
+def load_chat_and_toggle():
+    chat_history = []
+    toggle_state = False
+
+    # Carica chat salvata
+    if os.path.exists("chat_state.json"):
+        try:
+            with open("chat_state.json", "r", encoding="utf-8") as f:
+                chat_history = json.load(f)
+        except Exception as e:
+            print("Errore caricando chat salvata:", e)
+
+    # Carica stato toggle
+    if os.path.exists("toggle_state.json"):
+        try:
+            with open("toggle_state.json", "r", encoding="utf-8") as f:
+                toggle_state = json.load(f)
+        except Exception as e:
+            print("Errore caricando toggle:", e)
+
+    return chat_history, toggle_state
+
+
+def save_chat_and_toggle(chat_history, toggle_state):
+    try:
+        with open("chat_state.json", "w", encoding="utf-8") as f:
+            json.dump(chat_history, f, ensure_ascii=False, indent=2)
+        with open("toggle_state.json", "w", encoding="utf-8") as f:
+            json.dump(toggle_state, f)
+    except Exception as e:
+        print("Errore salvando lo stato:", e)
+
+
+with gr.Blocks(css="max-height: 100%") as chatbot_ui:
+    gr.HTML("""
+        <style>
+        #docs_list .wrap.svelte-1m7w40t {
+            max-height: 400px !important;
+            overflow-y: auto !important;
+            padding: 5px;
+        }
+        
+        </style>
+        """)
     gr.Markdown(
         "<h2 style='text-align: center; font-size: 40px;'>GRI-QA Chatbot</h2>"
     )
@@ -247,8 +409,8 @@ with gr.Blocks() as chatbot_ui:
             chatbot = gr.Chatbot(
                 elem_id="chatbot",
                 type="messages",
-                min_height=600,
-                max_height=600,
+                min_height=500,
+                max_height=500,
                 avatar_images=(None, "./images/icon_chatbot.png"),
                 show_copy_button=True,
                 show_copy_all_button=True,
@@ -265,31 +427,56 @@ with gr.Blocks() as chatbot_ui:
 
         # Colonna destra → Lista file interrogabili
         with gr.Column(scale=1):
-            docs_list = gr.CheckboxGroup(
-                elem_id="docs_list",
-                choices=gradio_actions.get_docs_from_db(),  # qui li carichi dal DB
-                label="Seleziona documenti da interrogare",
-                value=[],
-                interactive=True
-            )
+            with gr.Row():
+                docs_list = gr.CheckboxGroup(
+                    elem_id="docs_list",
+                    choices=[],
+                    label="Select documents to query",
+                    value=[],
+                    interactive=True,
+
+                )
+            with gr.Row(elem_id="row_toggle"):
+                select_pot = Toggle(
+                    elem_id='PoT',
+                    label='PoT',
+                    show_label=False,
+                    info='PoT',
+                    value=False,
+                    interactive=True,
+                    color='#50B596',
+                    transition=1
+                )
 
 
     def clear_textbox():
         return {"text": ""}
 
+
     # Disabilita le checkbox quando l'utente invia
+
+
     def disable_docs():
         return gr.update(interactive=False)
 
+
     # Riabilita le checkbox quando il bot ha finito
+
+
     def enable_docs():
         return gr.update(interactive=True)
 
+
     # Disabilita il textbox quando l'utente invia
+
+
     def disable_textbox():
         return gr.update(interactive=False)
 
+
     # Riabilita il textbox quando il bot ha finito
+
+
     def enable_textbox():
         return gr.update(interactive=True)
 
@@ -315,7 +502,7 @@ with gr.Blocks() as chatbot_ui:
     # Bot risponde usando anche la selezione dei documenti
     bot_msg = chat_msg.then(
         handle_chat_with_pdf,
-        inputs=[chatbot, chat_input, docs_list],
+        inputs=[chatbot, chat_input, docs_list, select_pot],
         outputs=[chatbot]
     )
 
@@ -338,7 +525,10 @@ with gr.Blocks() as chatbot_ui:
 
     chatbot.like(gradio_actions.print_like_dislike, None, None, like_user_message=False)
 
-with gr.Blocks() as process_file_ui:
+with gr.Blocks(css="max-height: 100%") as company_cards:
+    cards_container = gr.HTML()
+
+with gr.Blocks(css="max-height: 100%") as process_file_ui:
     gr.Markdown(
         "<h2 style='text-align: center; font-size: 40px;'>GRI-QA Extraction of GRI Information</h2>"
     )
@@ -359,7 +549,7 @@ with gr.Blocks() as process_file_ui:
             # Output sotto il caricamento
             output_box = gr.Markdown(
                 label="Output",
-                height=450,
+                height=300,
                 show_label=True,
                 container=True,
 
@@ -369,8 +559,7 @@ with gr.Blocks() as process_file_ui:
         with gr.Column(scale=2):
             with gr.Group(visible=True) as csv_group:
                 # Dropdown inizialmente vuoti
-                pdf_dropdown = gr.Dropdown(choices=gradio_actions.list_pdf_folders(), value=None,
-                                           label="🗂️ Seleziona cartella")
+                pdf_dropdown = gr.Dropdown(choices=[], value=None, label="🗂️ Seleziona cartella")
                 csv_dropdown = gr.Dropdown(choices=[], value=None, label="📄 Seleziona file CSV")
 
                 dataframe = gr.Dataframe(visible=False, interactive=True, value=pd.DataFrame(), max_height=380,
@@ -401,6 +590,10 @@ with gr.Blocks() as process_file_ui:
         fn=gradio_actions.update_docs_list,
         inputs=[],
         outputs=docs_list
+    ).then(
+        fn=add_cards,
+        inputs=[pdf_input],
+        outputs=[cards_container]
     )
 
     clear_button.click(
@@ -423,13 +616,38 @@ if __name__ == "__main__":
 
     with gr.Blocks(
             theme='lone17/kotaemon',
-            title="GRI-QA demo",
+            title="GRI-QA demo"
 
     ) as demo:
+        gr.HTML("""
+           <style>
+           /* === Scrollbar globale per tutta la pagina === */
+
+           /* Tutti gli elementi scrollabili */
+           *::-webkit-scrollbar {
+                width: 8px;
+            }
+            *::-webkit-scrollbar-thumb {
+                background-color: rgba(100, 100, 100, 0.4);
+                border-radius: 4px;
+            }
+            *::-webkit-scrollbar-thumb:hover {
+                background-color: rgba(100, 100, 100, 0.6);
+            }
+           
+           </style>
+           """)
         gr.TabbedInterface(
-            [chatbot_ui, process_file_ui],
-            ["Chatbot", "Process File"]
+            [chatbot_ui, process_file_ui, company_cards],
+            ["Chatbot", "Process File", "Company Card"],
         )
-        demo.load(concurrency_limit=None)
+        # Rigenera cards al caricamento
+        demo.load(concurrency_limit=None, fn=render_cards, inputs=[], outputs=[cards_container])
+        # Rigenera dropdown PDF al caricamento
+        demo.load(concurrency_limit=None, fn=gradio_actions.refresh_pdf_folders, inputs=[], outputs=[pdf_dropdown])
+        # Rigenera la checkbox nel chatbot
+        demo.load(concurrency_limit=None, fn=gradio_actions.refresh_docs_list, inputs=[], outputs=[docs_list])
+        # Ricarica chat e toggle salvati al caricamento della pagina
+        demo.load(concurrency_limit=None, fn=load_chat_and_toggle, inputs=[], outputs=[chatbot, select_pot])
 
     demo.launch()
