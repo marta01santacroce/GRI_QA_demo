@@ -1,5 +1,3 @@
-from idlelib.iomenu import errors
-
 import pandas as pd
 from prompts.query_agent_prompts import prompt_extract, prompt_fallback_python, prompt_normalization, prompt_total
 from llm import ask_openai
@@ -34,14 +32,26 @@ class QueryAgent:
     def extract_result(self, text: str, pattern: str) -> str:
         position = text.lower().rfind(pattern.lower())
         if position == -1:
-            print(f"Cannot find pattern '{pattern}' in '{text}'")
-            return ""
+            print(f"Cannot find pattern '{pattern}' in '{text}'. Defaulting to '{text}'...")
+            return text
         else:
             position += len(pattern)
         return text[position:].strip()
 
     def filter_table(self, query: str, table: pd.DataFrame) -> Union[tuple[pd.DataFrame, str], tuple[int, str]]:
-        prompt_extract_filled = prompt_extract.format(question=query, table=table.to_html())
+        # add row index
+        try:
+            table = table.drop(columns="index")
+        except:
+            pass
+
+        table.insert(0, "index", range(len(table)))
+
+        # add column index
+        table = pd.concat([pd.DataFrame([table.columns.tolist()], columns=table.columns), table], ignore_index=True)
+        table.columns = range(len(table.columns))
+
+        prompt_extract_filled = prompt_extract.format(question=query, table=table.to_html(index=False))
         response = ask_openai([
             {
                 "role": "system",
@@ -57,8 +67,23 @@ class QueryAgent:
             print(f"Formatting error while extracting the row and column indices: '{rows_columns_extracted}'")
             return -1, response
 
-        table = table[table["index"].isin(rows_columns_extracted["rows"])]
-        table = table.iloc[:, rows_columns_extracted["columns"]]
+        table.columns = table.columns.astype(str)
+        columns = [el for i,el in enumerate(table.iloc[0,:]) if i in rows_columns_extracted["columns"]]
+
+        table = table[table["0"].isin(rows_columns_extracted["rows"])] # table["0"] is "index"
+        table = table[[str(el) for el in rows_columns_extracted["columns"]]]
+
+        # clean
+        table.columns = columns
+        try:
+            table = table.drop(index=0).reset_index(drop=True)
+        except:
+            table = table.reset_index(drop=True)
+
+        try:
+            table = table.drop(columns='index')
+        except:
+            pass
 
         return table, response
 
@@ -138,7 +163,7 @@ class QueryAgent:
             intermediate_responses[key] = []
             for table in tables:
                 filtered_table, extract_response = self.filter_table(query, table)
-                if filtered_table == -1:
+                if isinstance(filtered_table, int) and filtered_table == -1:
                     error = True
 
                 if error:
@@ -166,7 +191,7 @@ class QueryAgent:
         results, error = self.execute(python_code, query, '\n\n'.join(new_texts) + "\n\n" + list_of_rules)
 
         if error:
-            return errors
+            return results
 
         # Final answer
         results = self.remove_markdown_syntax(self.extract_result(results, "Final answer:"))
