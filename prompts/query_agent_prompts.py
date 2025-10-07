@@ -5,6 +5,7 @@ First reason step-by-step. Then, write "Final answer: " followed exclusively by 
     "rows": [row_index1,...,row_indexn],
     "columns": [column_index1,...,column_indexn],
 }}
+The column indices must start from 0.
 Ensure that the final answer is in the expected form. Do not write anything else after "Final answer:". Do not use Markdown syntax.
 
 Question: {question}
@@ -32,3 +33,14 @@ Question. {question}
 Content: {content}
 
 Let's think step-by-step. """
+
+prompt_total = """
+You must create the python code capable of answering the following question given the provided tables. First write your reasoning. Then, in the end, write "Final answer:" followed by the python code and nothing else. The Python code must be runnable "as it is", so make sure to include the relevant imports. At the end of the python function, print() the result.
+If the question is boolean, the output must be exclusively a 'yes' or 'no' answer. If the question asks for a list of values, you must answer with a list of values separated with a comma. Write the numerical values with exactly 2 decimal values.
+Ensure that the final answer is in the expected form. Do not write anything else after "Final answer:". Do not use Markdown syntax.
+
+Question: {question}
+Tables: {paragraph}
+
+Let's think step-by-step.
+"""

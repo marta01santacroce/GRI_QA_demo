@@ -1,8 +1,11 @@
+from idlelib.iomenu import errors
+
 import pandas as pd
-from prompts.query_agent_prompts import prompt_extract, prompt_fallback_python
+from prompts.query_agent_prompts import prompt_extract, prompt_fallback_python, prompt_normalization, prompt_total
 from llm import ask_openai
-from typing import Union, List
+from typing import Union, List, Dict
 import io
+import re
 import contextlib
 
 class QueryAgent:
@@ -54,7 +57,7 @@ class QueryAgent:
             print(f"Formatting error while extracting the row and column indices: '{rows_columns_extracted}'")
             return -1, response
 
-        table = table[table["index"] in rows_columns_extracted["rows"]]
+        table = table[table["index"].isin(rows_columns_extracted["rows"])]
         table = table.iloc[:, rows_columns_extracted["columns"]]
 
         return table, response
@@ -86,7 +89,35 @@ class QueryAgent:
         # so inside the caller function, do not launch the final LLM call if error is True
         return result, error
 
-    def query(self, query: str, tables: dict[List[pd.DataFrame]], texts: List[str]) -> str:
+    def table_normalization(self, query: str, intermediate_tables: dict[str, list[pd.DataFrame]]) -> str:
+        html_tables = []
+        for key, tables in intermediate_tables.items():
+            for table in tables:
+                html_tables.append(table.to_html(index=False))
+
+        prompt_text = "\n\n".join(html_tables)
+        prompt = prompt_normalization.format(question=query, tables=prompt_text)
+        list_of_rules_raw = ask_openai([
+            {
+                "role": "system",
+                "content": prompt,
+            }
+        ])
+
+        list_of_rules = self.remove_markdown_syntax(self.extract_result(list_of_rules_raw, "Final answer:"))
+        return list_of_rules
+
+    def table_insertion(self, texts: list[str], tables: Dict[int, List[pd.DataFrame]]) -> List[str]:
+        new_texts = []
+        for i, text in enumerate(texts):
+            new_text = text
+            for j in range(len(tables[i])):
+                new_text = new_text.replace(f"<Table{j + 1}>", tables[i][j].to_html(index=False))
+            new_texts.append(new_text)
+
+        return new_texts
+
+    def query(self, query: str, tables: Dict[int, List[pd.DataFrame]], texts: List[str]) -> str:
         """
         given a query and a list of tables, this function processes each table in this way:
         - Filtering: extraction of relevant rows and columns from each table
@@ -97,21 +128,84 @@ class QueryAgent:
         - Final answer: the final result is given back to the LLM, which produces a general response explaining the answer
         """
 
-        intermediate_responses = []
-        intermediate_tables = []
+        intermediate_responses = {}
+        intermediate_tables = {}
         error = False
 
         # filter table
-        for table in tables:
-            filtered_table, extract_response = self.filter_table(query, table)
-            if filtered_table == -1:
-                error = True
+        for key, tables in tables.items():
+            intermediate_tables[key] = []
+            intermediate_responses[key] = []
+            for table in tables:
+                filtered_table, extract_response = self.filter_table(query, table)
+                if filtered_table == -1:
+                    error = True
 
-            if error:
-                intermediate_responses.append(-1)
-                intermediate_tables.append(-1)
-            else:
-                intermediate_responses.append(extract_response)
-                intermediate_tables.append(filtered_table)
+                if error:
+                    intermediate_responses[key].append(-1)
+                    intermediate_tables[key].append(-1)
+                else:
+                    intermediate_responses[key].append(extract_response)
+                    intermediate_tables[key].append(filtered_table)
 
         # normalize table
+        list_of_rules = self.table_normalization(query, intermediate_tables)
+
+        # Table insertion
+        new_texts = self.table_insertion(texts, intermediate_tables)
+
+        # PoT
+        prompt = prompt_total.format(question=query, paragraph="\n\n".join(new_texts) + "\n\n" + list_of_rules)
+        python_text_raw = ask_openai([
+            {
+                "role": "system",
+                "content": prompt,
+            }
+        ])
+        python_code = self.remove_markdown_syntax(self.extract_result(python_text_raw, "Final answer:"))
+        results, error = self.execute(python_code, query, '\n\n'.join(new_texts) + "\n\n" + list_of_rules)
+
+        if error:
+            return errors
+
+        # Final answer
+        results = self.remove_markdown_syntax(self.extract_result(results, "Final answer:"))
+        return results
+
+
+if __name__=='__main__':
+    ag = QueryAgent()
+
+    df1 = pd.DataFrame({
+        "index": [0, 1, 2],
+        "name": ["A", "B", "C"],
+        "value": [5, 15, 25]
+    })
+
+    df2 = pd.DataFrame({
+        "index": [0, 1, 2],
+        "name": ["X", "Y", "Z"],
+        "value": [7, 12, 30]
+    })
+
+    df3 = pd.DataFrame({
+        "index": [0, 1, 2],
+        "name": ["E", "F", "G"],
+        "value": [5, 15, 25]
+    })
+
+    tables = {
+        0: [df1, df2],
+        1: [df3]
+    }
+
+    texts = [
+        "Per rispondere alla domanda, considera i dati riportati nelle tabelle " +
+        " e ".join([f"<Table{i + 1}>" for i in range(len(tables[0]))]) +
+        " e analizza i valori principali.",
+
+        "Infine, fai riferimento alla tabella " + "<Table1>" + " per completare l'analisi."
+    ]
+
+    result = ag.query("Select rows with value > 10", tables, texts)
+    print(result)
