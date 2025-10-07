@@ -15,6 +15,9 @@ from gradio_toggle import Toggle
 
 server_host = "155.185.48.176"  # se lavoro sul server unimore, sennò server_host = 'localhost'
 
+# ---------------------------
+# Messaggi template per LLM
+# ---------------------------
 messages = [
     {"role": "system",
      "content": (
@@ -35,6 +38,10 @@ messages = [
      )}
 ]
 
+
+# ---------------------------
+# Funzioni
+# ---------------------------
 
 def clear_all():
     # csv_group.visible = False
@@ -177,15 +184,15 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_va
         new_chat_history = chat_history + [
             {"role": "assistant", "content": response}
         ]
-        save_chat_and_toggle(new_chat_history, select_pot_value)
+        # save_chat_and_toggle(new_chat_history, select_pot_value)
         return new_chat_history
 
     if user_message == '':
-        response =  "⚠️ No input received from User."
+        response = "⚠️ No input received from User."
         new_chat_history = chat_history + [
             {"role": "assistant", "content": response}
         ]
-        save_chat_and_toggle(new_chat_history, select_pot_value)
+        # save_chat_and_toggle(new_chat_history, select_pot_value)
         return new_chat_history
 
     env = os.environ.copy()
@@ -199,9 +206,8 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_va
         new_chat_history = chat_history + [
             {"role": "assistant", "content": response}
         ]
-        save_chat_and_toggle(new_chat_history, select_pot_value)
+        # save_chat_and_toggle(new_chat_history, select_pot_value)
         return new_chat_history
-
 
     for file in docs_list:
 
@@ -266,45 +272,19 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_va
         {"role": "assistant", "content": response}
     ]
 
-    save_chat_and_toggle(new_chat_history, select_pot_value)
+    # save_chat_and_toggle(new_chat_history, select_pot_value)
     return new_chat_history
 
 
+# ---------------------------
+# Card rendering con classi
+# ---------------------------
 def make_card_html(company_name, summary_text):
+    # markdown2 produce HTML; lo inseriamo dentro il contenitore .card-content
     return f"""
-    <div style="
-        border: 1px solid #6bff93; /* bordo verde chiaro */
-        border-radius: 10px;
-        display: flex;
-        flex-direction: column;
-        height: 300px; /* altezza uniforme delle card */
-        overflow: hidden; /* impedisce che il contenuto esca */
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
-    ">
-        <!-- Header della card -->
-        <div style="
-            background-color: #11bd67; /* verde header */
-            color: #000000; /* testo nero */
-            padding: 10px;
-            text-align: center;
-            font-weight: bold;
-            flex-shrink: 0;
-            border-radius: 10px 10px 0 0; /* arrotonda solo angoli superiori */
-        ">
-            {company_name}
-        </div>
-
-        <!-- Contenuto scrollabile -->
-        <div style="
-            padding: 10px;
-            overflow-y: auto;
-            flex: 1;
-            font-size: 14px;
-            text-align: left;
-            color: black;
-            max-width: 100%;
-            overflow-x: hidden;
-        ">
+    <div class="card">
+        <div class="card-header">{company_name}</div>
+        <div class="card-content">
             {markdown2.markdown(summary_text)}
         </div>
     </div>
@@ -333,16 +313,7 @@ def add_cards(files):
 def render_cards_from_dict(companies_dict):
     cards_html_content = "".join(make_card_html(name, summary) for name, summary in companies_dict.items())
     return f"""
-    <div style="
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-        gap: 15px;
-        max-height: 80vh;
-        overflow-y: auto;
-        padding-right: 10px;
-        max-width: 100%;
-        overflow-x: hidden;
-    ">
+    <div class="cards-container">
         {cards_html_content}
     </div>
     """
@@ -355,50 +326,10 @@ def render_cards():
     return render_cards_from_dict(companies_dict)
 
 
-def load_chat_and_toggle():
-    chat_history = []
-    toggle_state = False
-
-    # Carica chat salvata
-    if os.path.exists("chat_state.json"):
-        try:
-            with open("chat_state.json", "r", encoding="utf-8") as f:
-                chat_history = json.load(f)
-        except Exception as e:
-            print("Errore caricando chat salvata:", e)
-
-    # Carica stato toggle
-    if os.path.exists("toggle_state.json"):
-        try:
-            with open("toggle_state.json", "r", encoding="utf-8") as f:
-                toggle_state = json.load(f)
-        except Exception as e:
-            print("Errore caricando toggle:", e)
-
-    return chat_history, toggle_state
-
-
-def save_chat_and_toggle(chat_history, toggle_state):
-    try:
-        with open("chat_state.json", "w", encoding="utf-8") as f:
-            json.dump(chat_history, f, ensure_ascii=False, indent=2)
-        with open("toggle_state.json", "w", encoding="utf-8") as f:
-            json.dump(toggle_state, f)
-    except Exception as e:
-        print("Errore salvando lo stato:", e)
-
-
-with gr.Blocks(css="max-height: 100%") as chatbot_ui:
-    gr.HTML("""
-        <style>
-        #docs_list .wrap.svelte-1m7w40t {
-            max-height: 400px !important;
-            overflow-y: auto !important;
-            padding: 5px;
-        }
-        
-        </style>
-        """)
+# ---------------------------
+# UI definition
+# ---------------------------
+with gr.Blocks() as chatbot_ui:
     gr.Markdown(
         "<h2 style='text-align: center; font-size: 40px;'>GRI-QA Chatbot</h2>"
     )
@@ -455,13 +386,11 @@ with gr.Blocks(css="max-height: 100%") as chatbot_ui:
 
     # Disabilita le checkbox quando l'utente invia
 
-
     def disable_docs():
         return gr.update(interactive=False)
 
 
     # Riabilita le checkbox quando il bot ha finito
-
 
     def enable_docs():
         return gr.update(interactive=True)
@@ -469,13 +398,11 @@ with gr.Blocks(css="max-height: 100%") as chatbot_ui:
 
     # Disabilita il textbox quando l'utente invia
 
-
     def disable_textbox():
         return gr.update(interactive=False)
 
 
     # Riabilita il textbox quando il bot ha finito
-
 
     def enable_textbox():
         return gr.update(interactive=True)
@@ -525,10 +452,12 @@ with gr.Blocks(css="max-height: 100%") as chatbot_ui:
 
     chatbot.like(gradio_actions.print_like_dislike, None, None, like_user_message=False)
 
-with gr.Blocks(css="max-height: 100%") as company_cards:
-    cards_container = gr.HTML()
+# Company cards tab: create a gr.HTML with elem_id so CSS can target it
+with gr.Blocks() as company_cards:
+    # assign an elem_id to the HTML component so we can target it from CSS
+    cards_container = gr.HTML(elem_id="cards-zone")
 
-with gr.Blocks(css="max-height: 100%") as process_file_ui:
+with gr.Blocks() as process_file_ui:
     gr.Markdown(
         "<h2 style='text-align: center; font-size: 40px;'>GRI-QA Extraction of GRI Information</h2>"
     )
@@ -551,8 +480,7 @@ with gr.Blocks(css="max-height: 100%") as process_file_ui:
                 label="Output",
                 height=300,
                 show_label=True,
-                container=True,
-
+                container=True
             )
 
         # Colonna destra (2/3)
@@ -616,27 +544,9 @@ if __name__ == "__main__":
 
     with gr.Blocks(
             theme='lone17/kotaemon',
-            title="GRI-QA demo"
-
+            title="GRI-QA demo",
+            css_paths="style.css"  # <-- qui iniettiamo TUTTO il CSS definito sopra
     ) as demo:
-        gr.HTML("""
-           <style>
-           /* === Scrollbar globale per tutta la pagina === */
-
-           /* Tutti gli elementi scrollabili */
-           *::-webkit-scrollbar {
-                width: 8px;
-            }
-            *::-webkit-scrollbar-thumb {
-                background-color: rgba(100, 100, 100, 0.4);
-                border-radius: 4px;
-            }
-            *::-webkit-scrollbar-thumb:hover {
-                background-color: rgba(100, 100, 100, 0.6);
-            }
-           
-           </style>
-           """)
         gr.TabbedInterface(
             [chatbot_ui, process_file_ui, company_cards],
             ["Chatbot", "Process File", "Company Card"],
@@ -648,6 +558,6 @@ if __name__ == "__main__":
         # Rigenera la checkbox nel chatbot
         demo.load(concurrency_limit=None, fn=gradio_actions.refresh_docs_list, inputs=[], outputs=[docs_list])
         # Ricarica chat e toggle salvati al caricamento della pagina
-        demo.load(concurrency_limit=None, fn=load_chat_and_toggle, inputs=[], outputs=[chatbot, select_pot])
+        # demo.load(concurrency_limit=None, fn=load_chat_and_toggle, inputs=[], outputs=[chatbot, select_pot])
 
     demo.launch()
