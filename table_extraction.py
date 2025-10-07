@@ -31,15 +31,20 @@ class UnstructuredTableExtractor:
 
         return output_pdf_path
 
-    def extract_table_unstructured(self, documents):
+    def extract_table_unstructured(self, documents, table_placeholder="[TABLEPPLACEHOLDER {number}]"):
+        """
+        Output:
+        1. tables: list(tuple(table element, pdf_name, page, doc_index)))
+        2. text_without_tables: list(tuple(page_text, pdf_name, page, doc_index))
+        page_text is str
+        """
         tables = []
+        text_without_tables = []
 
         for doc_index, doc in tqdm(enumerate(documents)):
             pdf_name = doc.metadata["source"]
-
             page = doc.metadata["page"]
 
-            # temp_pdf_path = self.extract_page(f"{pdf_name}", int(page))
             try:
                 temp_pdf_path = self.extract_page(f"{pdf_name}", int(page))
             except:
@@ -52,10 +57,19 @@ class UnstructuredTableExtractor:
                 model_name=self.model_name
             )
 
+            page_text_parts = []
+            num_table = 0
             for element in elements:
                 if element.category == "Table":
                     tables.append((element, pdf_name, page, doc_index))
+                    page_text_parts.append(table_placeholder.format(number=num_table))
+                    num_table += 1
+                else:
+                    page_text_parts.append(element.text.strip())
+
+            page_text = "\n".join(part for part in page_text_parts if part)
+            text_without_tables.append((page_text, pdf_name, page, doc_index))
 
             os.remove(temp_pdf_path)
 
-        return tables
+        return tables, text_without_tables
