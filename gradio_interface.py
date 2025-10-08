@@ -10,8 +10,8 @@ import pandas as pd
 import shutil
 import gradio_actions
 import markdown2
-import build_summary_company
 from gradio_toggle import Toggle
+import re
 
 server_host = "155.185.48.176"  # se lavoro sul server unimore, sennò server_host = 'localhost'
 
@@ -26,14 +26,14 @@ messages = [
          "Instructions: "
          "- Think step by step through the information before answering (use reasoning internally). "
          "- Answer clearly, concisely and succinctly. "
-         "- Use only the data from the tables inside the provided context. "
+         "- Use only the data from the provided context.(text exctracted from page + data tables)"
          "- If you cannot find the answer, say so clearly. "
-         "- Report the row and cell you used for the answer (from the CSV format) and indicate the PAGE and NUMBER of the table (from the context). "
+         "- Report the row and cell you used for the answer (from the table inside the text) and indicate the PAGE and NUMBER of the table (from the context). "
          "- Do not explain your reasoning process; just give the final answer and required details."
      )},
     {"role": "user",
      "content": (
-         "Here are the name of the file and the relevant context like a table in csv with at the end the page and the number of table:\n---\n{context}\n---\n"
+         "Here are the name of the file and the relevant context like  text with tables:\n---\n{context}\n---\n"
          "Now, answer the following question based strictly on the context.\n\nQuestion: {user_message}"
      )}
 ]
@@ -128,25 +128,7 @@ def upload_and_process_files(files):
             )
             continue
 
-        """ Uso openAI per scremare le tabelle trovate. Per ogni GRI-tabella_presa_dal_csv gli chiedo se è inerente"""
-
-        new_metadata_path = llm.check(folder_path=os.path.join(".", "table_dataset"),
-                                      gri_code_list_path=json_file_query, pdf_basename=pdf_basename)
-
-        if not os.path.exists(new_metadata_path):
-            results.append(f"📁{pdf_basename}: {new_metadata_path} non trovato  ")
-            continue
-
-        x = os.path.join(".", "table_dataset", pdf_basename, "metadata.json")
-        y = os.path.join(".", "table_dataset", pdf_basename, "metadata_before_llm.json")
-        os.replace(x, y)
-
-        new_name = os.path.join(".", "table_dataset", pdf_basename, "metadata_after_llm.json")
-        os.replace(new_metadata_path, new_name)
-
-        """ !! SPOSTARE llm.formatted prima di llm.check se si vuole formattare prima di valuatre se è pertinente il csv al GRI """
-        llm.formatted(folder_path=os.path.join(".", "table_dataset"), pdf_basename=pdf_basename)
-
+        new_metadata_path = os.path.join("table_dataset", pdf_basename, "metadata_after_llm.json")
         # Leggo il metadata_after_llm.json
         with open(new_metadata_path, "r", encoding="utf-8") as f:
             metadata = json.load(f)
@@ -168,46 +150,37 @@ def upload_and_process_files(files):
 
         results.append("\n".join(output_lines))
 
-        build_summary_company.build_summary(pdf_basename)
-
     return "\n\n".join(results)
 
 
 def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_value):
     """
     Gestisce una domanda dell'utente con file PDF selezionati.
+    Integra i testi .txt con le tabelle CSV collegate sostituendo i placeholder [TABLEPLACEHOLDER x].
     """
     user_message = chat_input_data.get("text", "").strip()
 
     if len(docs_list) == 0:
         response = "⚠️ No documents selected."
-        new_chat_history = chat_history + [
-            {"role": "assistant", "content": response}
-        ]
-        # save_chat_and_toggle(new_chat_history, select_pot_value)
+        new_chat_history = chat_history + [{"role": "assistant", "content": response}]
         return new_chat_history
 
     if user_message == '':
         response = "⚠️ No input received from User."
-        new_chat_history = chat_history + [
-            {"role": "assistant", "content": response}
-        ]
-        # save_chat_and_toggle(new_chat_history, select_pot_value)
+        new_chat_history = chat_history + [{"role": "assistant", "content": response}]
         return new_chat_history
 
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
 
-    context = ""
-
-    # Se il toggle è attivo → comportamento alternativo per ora non fa nulla se non stampare a video una frase
+    # Se il toggle PoT è attivo
     if select_pot_value:
         response = "🧠 PoT attivo"
-        new_chat_history = chat_history + [
-            {"role": "assistant", "content": response}
-        ]
-        # save_chat_and_toggle(new_chat_history, select_pot_value)
+        new_chat_history = chat_history + [{"role": "assistant", "content": response}]
         return new_chat_history
+
+    # Accumula tutti i testi integrati per i file PDF selezionati
+    context = ""
 
     for file in docs_list:
 
@@ -229,30 +202,57 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_va
         with open(metadata_path, "r", encoding="utf-8") as f:
             metadata = json.load(f)
 
-        # Trovo la tabella collegata
-        csv_texts = []
-        for q, refs in metadata.items():
-            if q.strip().lower() == user_message.strip().lower():
-                for page, num in refs:
-                    csv_file = os.path.join("table_dataset", file, f"{page}_{num}.csv")
+        # Trovo la domanda esatta e i riferimenti
+        if user_message not in metadata:
+            context += f"⚠️ No references found for query '{user_message}' in {file}\n"
+            continue
+
+        refs = metadata[user_message]
+        combined_text = ""
+        pages = []
+
+        for page, num in refs:
+            if page not in pages:
+                # === Leggi il file TXT della pagina ===
+                txt_path = os.path.join("table_dataset", file, f"{page}.txt")
+                if not os.path.exists(txt_path):
+                    print(f"DEBUG: Missing TXT file {txt_path}")
+                    continue
+
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    txt_content = f.read()
+
+                # === Sostituisci i placeholder con le tabelle CSV ===
+                placeholders = re.findall(r'\[TABLEPLACEHOLDER\s*(\d+)]', txt_content)
+
+                for placeholder_num in placeholders:
+                    csv_file = os.path.join("table_dataset", file, f"{page}_{placeholder_num}.csv")
+
                     if os.path.exists(csv_file):
                         try:
                             df = pd.read_csv(csv_file, sep=';')
+                            table_str = f"\n[Table from page {page}, num {placeholder_num}]\n" + df.to_csv(index=False)
                         except Exception:
-                            print("DEBUG eccezione file: ", csv_file)
-                            continue
+                            print(f"DEBUG: errore durante lettura CSV {csv_file}")
+                            table_str = ""
+                    else:
+                        # Nessuna tabella → rimuovo placeholder
+                        table_str = ""
 
-                        csv_texts.append(f"# Page {page}, Table {num}\n")
-                        csv_texts.append(df.to_csv(index=False))
-                        print("DEBUG: csv file: ", csv_file)
+                    # Sostituisci nel testo
+                    txt_content = re.sub(
+                        rf'\[TABLEPLACEHOLDER\s*{placeholder_num}]',
+                        table_str,
+                        txt_content
+                    )
 
-        if not csv_texts:
-            context = f"No table found for your query for file selected {file}"
+                combined_text += f"\n---\n# Page {page}\n{txt_content}\n"
+                pages.append(page)
 
-        # Costruisco messaggi per OpenAI
-        tables_str = "\n\n".join(csv_texts)  # unisci tutte le tabelle trovate
+
+        # === Aggiungi al contesto ===
         header = f"File name: {file}\n"
-        context += f"{header}\n\n{tables_str}\n---\n"
+        context += f"{header}\n{combined_text}\n---\n"
 
     message = [
         messages[0],  # system invariato
@@ -267,12 +267,8 @@ def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_va
 
     response = llm.ask_openai(message)
 
-    # Appendi la nuova risposta alla chat esistente
-    new_chat_history = chat_history + [
-        {"role": "assistant", "content": response}
-    ]
-
-    # save_chat_and_toggle(new_chat_history, select_pot_value)
+    # === 6️⃣ Aggiorna la chat ===
+    new_chat_history = chat_history + [{"role": "assistant", "content": response}]
     return new_chat_history
 
 
@@ -296,18 +292,8 @@ def add_cards(files):
     if not files:
         return render_cards()
 
-    # Eventualmente fai qualche operazione sui nuovi file (es: generare summary subito)
-    new_names = [os.path.splitext(os.path.basename(f.name))[0] for f in files]
-    for name in new_names:
-        try:
-            # Se vuoi obbligare la creazione del summary subito, decommenta:
-            # build_summary_company.build_summary(name)
-            pass
-        except Exception:
-            pass
-
-    # Ricostruisci le cards leggendo lo stato aggiornato dal DB/filesystem
-    return render_cards()
+    else:
+        pass
 
 
 def render_cards_from_dict(companies_dict):
@@ -326,9 +312,6 @@ def render_cards():
     return render_cards_from_dict(companies_dict)
 
 
-# ---------------------------
-# UI definition
-# ---------------------------
 with gr.Blocks() as chatbot_ui:
     gr.Markdown(
         "<h2 style='text-align: center; font-size: 40px;'>GRI-QA Chatbot</h2>"
@@ -468,7 +451,8 @@ with gr.Blocks() as process_file_ui:
             pdf_input = gr.File(
                 label="Carica PDF",
                 file_types=[".pdf"],
-                file_count="multiple"
+                file_count="multiple",
+                elem_id='pdf_input'
             )
 
             with gr.Row():
@@ -480,7 +464,8 @@ with gr.Blocks() as process_file_ui:
                 label="Output",
                 height=300,
                 show_label=True,
-                container=True
+                container=True,
+                elem_id='output_box'
             )
 
         # Colonna destra (2/3)
@@ -490,7 +475,7 @@ with gr.Blocks() as process_file_ui:
                 pdf_dropdown = gr.Dropdown(choices=[], value=None, label="🗂️ Seleziona cartella")
                 csv_dropdown = gr.Dropdown(choices=[], value=None, label="📄 Seleziona file CSV")
 
-                dataframe = gr.Dataframe(visible=False, interactive=True, value=pd.DataFrame(), max_height=380,
+                dataframe = gr.Dataframe(visible=False, interactive=True, value=pd.DataFrame(), max_height=280,
                                          wrap=True, show_copy_button=True, show_search='search', label="Contenuto CSV")
                 log_output = gr.Textbox(label="Output", interactive=False, autoscroll=False)
 

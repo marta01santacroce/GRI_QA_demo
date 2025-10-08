@@ -163,24 +163,28 @@ def formatted(folder_path, pdf_basename, chatbot=False):
         with open(csv_path, "r", encoding="utf-8") as f:
             csv_content = f.read()
 
-
-
         prompt = f"""
-         
-        You are provided with a CSV file automatically extracted from a table. Your task is to reformat it to obtain a rectangular table (all rows have the same number of columns). 
-        Instructions 
-        - Take the maximum number of fields that a row in the initial CSV has and correct the formatting by bringing all rows to that length.
-        - Use ; as the column separator.
-        - If a row has missing cells in a row, fill then with NaN.
-        - Keep numeric values as they are (including negative percentages).
-        - Correct any extraction errors (misplaced values, incorrect indentation, damaged headers). 
-        - The output should be clean CSV content only. 
-        - Improve readability: standardise headers and align numeric and text values. 
-        - Standardize headers: do not create duplicate column names; rename automatically if needed for clarity.
-        - Do not remove any rows.
-        
-        Return only the final CSV content, without any additional explanations.
 
+        You are given the content of a CSV file automatically extracted from a table. 
+        Your task is to clean and reformat it into a valid table, ensuring that **all rows have the same number of columns**.
+        
+        Follow these rules strictly:
+        
+        1. Use **;** as the column separator in the final output.
+        2. Determine the **maximum number of fields** present in any row, and expand all rows to that length.
+        3. If a row has missing cells, fill them with **NaN**.
+        4. Keep **numeric values as-is**, including negative percentages and decimals.
+        5. Fix **broken or merged cells**, misplaced values, or incorrect headers.
+        6. **Do not add or remove data rows** except for lines that are completely empty or contain only NaN.
+        7. Standardize headers:
+           - Create clear, readable names.
+           - Avoid duplicates (rename automatically if needed).
+           - Do not lose or shorten the meaning of headers.
+        8. Ensure consistent formatting: 
+           - Align numeric and text values properly.
+           - Remove symbols or characters that are clearly OCR or extraction noise.
+        9. Output **only the cleaned CSV content**, no explanations or comments.
+        
         Here is the CSV to process:
 
         {csv_content}
@@ -228,21 +232,6 @@ def add_user_message(chatbot_history, chat_input_data):
     saved_input = {"text": user_msg}
 
     return updated_chat, cleared_input, saved_input
-
-
-def format_for_openai(chat_history):
-    messages = [{"role": "system",
-                 "content": "Sei un assistente esperto di sostenibilità e standard GRI. Questa è la storia passata della chat:"}]
-    for entry in chat_history:
-        # Se è tupla (user_msg, bot_msg) tipica di Gradio Chatbot
-        if isinstance(entry, tuple) or isinstance(entry, list):
-            user_text, bot_text = entry
-            messages.append({"role": "user", "content": user_text})
-            if bot_text:
-                messages.append({"role": "assistant", "content": bot_text})
-        elif isinstance(entry, dict):
-            messages.append(entry)
-    return messages
 
 
 def ask_openai(messages):

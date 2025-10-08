@@ -8,6 +8,8 @@ import json
 from itertools import islice
 from bs4 import BeautifulSoup
 import re
+import llm
+import build_summary_company
 
 if __name__ == "__main__":
 
@@ -24,11 +26,10 @@ if __name__ == "__main__":
         elif os.path.isfile(args["pdf"]):
             file_names = [args["pdf"]]
         else:
-            raise ValueError(f"wrong file name")
+            raise ValueError("wrong file name")
 
         for file_name in file_names:
-            splitted_file_name = file_name.split(".")
-            if splitted_file_name[-1] != "pdf":
+            if not file_name.lower().endswith(".pdf"):
                 continue
 
             file_path = args["pdf"]
@@ -36,56 +37,99 @@ if __name__ == "__main__":
             dir_name = os.path.splitext(base_name)[0]
 
             args["pdf"] = file_name
-
             metadata_path = os.path.join("table_dataset", dir_name)
+            os.makedirs(metadata_path, exist_ok=True)
 
             gri_code_to_page = {}
             tables_as_html = set()
 
             for gri_code, description in islice(data.items(), 3, 8):  # dal 4 all'8 GRI
-
-                if gri_code not in gri_code_to_page.keys():
+                if gri_code not in gri_code_to_page:
                     gri_code_to_page[gri_code] = []
 
                 args["query"] = description
+
                 r.set_args(args)
                 s = r.run()
 
                 ute = UnstructuredTableExtractor("yolox", "hi_res")
 
-                for doc in tqdm(s[:args["k"]]):  # keeps only the top k pages with the highest score, where k is specified in the Python command (default = 5)
+                # Estrazione tabelle e testo
+                for doc in tqdm(s[:args["k"]]):  # top-k pagine
+                    tables, text_without_tables = ute.extract_table_unstructured([doc])
 
-                    tables = ute.extract_table_unstructured([doc])  # extract tables
+                    page_num = doc.metadata["page"]
 
+                    # ---- Salva tabelle CSV ----
                     for i, table in enumerate(tables):
-                        tables_as_html.add((table[0].metadata.text_as_html, doc.page_content, doc.metadata["page"], i))
-                        gri_code_to_page[gri_code].append((doc.metadata["page"], i))
+                        html_table = table[0].metadata.text_as_html
+                        gri_code_to_page[gri_code].append((page_num, i))
 
-            for table_html in tables_as_html:
+                        # Converti tabella HTML in righe
+                        soup = BeautifulSoup(html_table, "html.parser")
+                        rows = []
+                        for tr in soup.find_all("tr"):
+                            cells = [cell.get_text(strip=True) for cell in tr.find_all(["td", "th"])]
+                            rows.append(cells)
 
-                # table_html[0] contiene il testo della tabella estratta (HTML)
-                raw_table_text = table_html[0]
+                        csv_path = os.path.join(metadata_path, f"{page_num}_{i}.csv")
+                        with open(csv_path, mode='w', newline='', encoding='utf-8') as file:
+                            writer = csv.writer(file)
+                            writer.writerows(rows)
 
-                soup = BeautifulSoup(raw_table_text, "html.parser")
+                    for elem in text_without_tables:
+                        page = elem[2]
+                        page_text = elem[0]
+                        # Salva il file di testo finale
+                        txt_path = os.path.join(metadata_path, f"{page}.txt")
+                        with open(txt_path, 'w', encoding='utf-8') as txt_file:
+                            txt_file.write(page_text)
 
-                # Trova tutte le righe della tabella
-                rows = []
-                for tr in soup.find_all("tr"):
-                    # Ogni riga può avere sia <td> che <th>
-                    cells = [cell.get_text(strip=True) for cell in tr.find_all(["td", "th"])]
-                    rows.append(cells)
+            # ---- Salva metadata.json ----
+            with open(os.path.join(metadata_path, "metadata.json"), 'w', encoding='utf-8') as json_file:
+                json.dump(gri_code_to_page, json_file, indent=4, ensure_ascii=False)
 
-                # Assicurati che la cartella esista
-                if not os.path.exists(metadata_path):
-                    os.makedirs(metadata_path, exist_ok=True)
+            pdf_basename = dir_name
+            # Uso openAI per scremare le tabelle trovate. Per ogni GRI-tabella_presa_dal_csv gli chiedo se è inerente
+            new_metadata_path = llm.check(folder_path=os.path.join(".", "table_dataset"),  gri_code_list_path=args["load_query_from_file"], pdf_basename=pdf_basename)
 
-                # Salva in CSV
-                with open(os.path.join(metadata_path, f"{str(table_html[-2])}_{str(table_html[-1])}.csv"), mode='w', newline='', encoding='utf-8') as file:
-                    writer = csv.writer(file)
-                    writer.writerows(rows)
+            if not os.path.exists(new_metadata_path):
+                results.append(f"📁{pdf_basename}: {new_metadata_path} non trovato  ")
+                continue
 
-            with open(os.path.join(metadata_path, "metadata.json"), 'w',encoding='utf-8') as json_file:
-                json.dump(gri_code_to_page, json_file, indent=4)
+            x = os.path.join(".", "table_dataset", pdf_basename, "metadata.json")
+            y = os.path.join(".", "table_dataset", pdf_basename, "metadata_before_llm.json")
+            os.replace(x, y)
+
+            new_name = os.path.join(".", "table_dataset", pdf_basename, "metadata_after_llm.json")
+            os.replace(new_metadata_path, new_name)
+            # Uso openAI per formattare le tabelle
+            llm.formatted(folder_path=os.path.join(".", "table_dataset"), pdf_basename=pdf_basename)
+
+            # elimino i .txt che non hanno nessuna tabella associata
+
+            csvs = [f for f in os.listdir(metadata_path) if f.endswith(".csv")]
+
+            removed_txt = 0
+            removed_csv = 0
+
+            # Elimina i TXT che non hanno nessun CSV associato
+            for filename in os.listdir(metadata_path):
+                if not filename.endswith(".txt"):
+                    continue
+
+                page_name = os.path.splitext(filename)[0]  # es. "12" da "12.txt"
+                txt_path = os.path.join(metadata_path, filename)
+
+                # cerca csv che iniziano con "page_name_" (es. "12_0.csv")
+                has_csv = any(re.match(rf"^{page_name}_[0-15]+\.csv$", csv) for csv in csvs)
+
+                if not has_csv:
+                    os.remove(txt_path)
+                    removed_txt += 1
+                    print(f"Eliminato TXT senza tabella: {txt_path}")
+
+            build_summary_company.build_summary(dir_name)
 
     elif len(args["query"]) > 0:
 
