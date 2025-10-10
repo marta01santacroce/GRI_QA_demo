@@ -6,13 +6,14 @@ import io
 import re
 import contextlib
 
+
 class QueryAgent:
     def __init__(self):
         pass
 
     def remove_markdown_syntax(self, text: str) -> str:
         # Remove triple backtick code blocks (```python ... ```)
-        text = re.sub(r"```[\s\S]*?```", lambda m: re.sub(r"^```.*\n|```$", '', m.group()), text)
+        # text = re.sub(r"```[\s\S]*?```", lambda m: re.sub(r"^```.*\n|```$", '', m.group()), text)
 
         # Remove inline code (`code`)
         text = re.sub(r"`([^`]*)`", r"\1", text)
@@ -26,7 +27,7 @@ class QueryAgent:
         # Remove blockquotes
         text = re.sub(r"^>\s?", '', text, flags=re.MULTILINE)
 
-        text = text.replace("python", "")
+        # text = text.replace("python", "")
         return text.strip()
 
     def extract_result(self, text: str, pattern: str) -> str:
@@ -68,9 +69,9 @@ class QueryAgent:
             return -1, response
 
         table.columns = table.columns.astype(str)
-        columns = [el for i,el in enumerate(table.iloc[0,:]) if i in rows_columns_extracted["columns"]]
+        columns = [el for i, el in enumerate(table.iloc[0, :]) if i in rows_columns_extracted["columns"]]
 
-        table = table[table["0"].isin(rows_columns_extracted["rows"])] # table["0"] is "index"
+        table = table[table["0"].isin(rows_columns_extracted["rows"])]  # table["0"] is "index"
         table = table[[str(el) for el in rows_columns_extracted["columns"]]]
 
         # clean
@@ -187,20 +188,33 @@ class QueryAgent:
                 "content": prompt,
             }
         ])
+
         python_code = self.remove_markdown_syntax(self.extract_result(python_text_raw, "Final answer:"))
+
         results, error = self.execute(python_code, query, '\n\n'.join(new_texts) + "\n\n" + list_of_rules)
 
         if error:
-            return results
+            return python_text_raw + '\n' + 'Output :\n' + results
 
         # Final answer
         results = self.remove_markdown_syntax(self.extract_result(results, "Final answer:"))
-        return results
+        final_string = "🧠Program of Thought in action\n" + python_text_raw + "\n\nResult :\n" + results
+        print("final_string:\n", final_string)
+
+        return final_string
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
     ag = QueryAgent()
 
+    df1 = pd.read_csv('/home/n284480/GRI-QA/table_dataset/OTC_SU_2023/310_1.csv', sep=';')
+    df2 = pd.read_csv('/home/n284480/GRI-QA/table_dataset/OTC_SU_2023/311_0.csv', sep=';')
+    df3 = pd.read_csv('/home/n284480/GRI-QA/table_dataset/OTC_SU_2023/311_1.csv',  sep=';')
+
+    tables = {
+        0: [df1, df2, df3]
+    }
+    '''
     df1 = pd.DataFrame({
         "index": [0, 1, 2],
         "name": ["A", "B", "C"],
@@ -223,7 +237,7 @@ if __name__=='__main__':
         0: [df1, df2],
         1: [df3]
     }
-
+    
     texts = [
         "Per rispondere alla domanda, considera i dati riportati nelle tabelle " +
         " e ".join([f"<Table{i + 1}>" for i in range(len(tables[0]))]) +
@@ -231,6 +245,13 @@ if __name__=='__main__':
 
         "Infine, fai riferimento alla tabella " + "<Table1>" + " per completare l'analisi."
     ]
+    '''
 
-    result = ag.query("Select rows with value > 10", tables, texts)
+    texts = [
+        "Per rispondere alla domanda, considera i dati riportati nelle tabelle " +
+        " e ".join([f"<Table{i + 1}>" for i in range(len(tables[0]))]) +
+        " e analizza i valori principali.",
+    ]
+
+    result = ag.query("What is the reduction in estimated total energy consumption from 2022 to 2023?", tables, texts)
     print(result)
