@@ -12,6 +12,7 @@ import gradio_actions
 import markdown2
 from gradio_toggle import Toggle
 import re
+from query_agent import QueryAgent  # importa la tua classe
 
 server_host = "155.185.48.176"  # se lavoro sul server unimore, sennò server_host = 'localhost'
 
@@ -22,18 +23,18 @@ messages = [
     {"role": "system",
      "content": (
          "You are an experienced assistant in sustainability and GRI standards. "
-         "You are helping the user understand the data extracted from PDFs. "
+         "You help users understand the data extracted from the PDFs of various companies."
          "Instructions: "
          "- Think step by step through the information before answering (use reasoning internally). "
          "- Answer clearly, concisely and succinctly. "
-         "- Use only the data from the provided context.(text exctracted from page + data tables)"
+         "- Use only the data provided in the context (text extracted from the page + data tables for each company being analysed)."
          "- If you cannot find the answer, say so clearly. "
-         "- Report the row and cell you used for the answer (from the table inside the text) and indicate the PAGE and NUMBER of the table (from the context). "
+         "- Indicate the row, cell and name of the company you used for the answer (from the table within the text) and indicate the PAGE and NUMBER of the table (from the context) also for every extracted information"
          "- Do not explain your reasoning process; just give the final answer and required details."
      )},
     {"role": "user",
      "content": (
-         "Here are the name of the file and the relevant context like  text with tables:\n---\n{context}\n---\n"
+         "Here are the name of the file (comapny name) and the relevant context like text of the page with tables:\n---\n{context}\n---\n"
          "Now, answer the following question based strictly on the context.\n\nQuestion: {user_message}"
      )}
 ]
@@ -156,125 +157,167 @@ def upload_and_process_files(files):
 def handle_chat_with_pdf(chat_history, chat_input_data, docs_list, select_pot_value):
     """
     Gestisce una domanda dell'utente con file PDF selezionati.
-    Integra i testi .txt con le tabelle CSV collegate sostituendo i placeholder [TABLEPLACEHOLDER x].
+    Se `select_pot_value` è attivo, utilizza QueryAgent (Program-of-Thought);
+    altrimenti segue il flusso classico con LLM diretto.
     """
     user_message = chat_input_data.get("text", "").strip()
 
     if len(docs_list) == 0:
         response = "⚠️ No documents selected."
-        new_chat_history = chat_history + [{"role": "assistant", "content": response}]
-        return new_chat_history
+        return chat_history + [{"role": "assistant", "content": response}]
 
-    if user_message == '':
+    if user_message == "":
         response = "⚠️ No input received from User."
-        new_chat_history = chat_history + [{"role": "assistant", "content": response}]
-        return new_chat_history
+        return chat_history + [{"role": "assistant", "content": response}]
 
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
 
-    # Se il toggle PoT è attivo
+    # === CASO 1: Program of Thought attivo ===
     if select_pot_value:
-        response = "🧠 PoT attivo"
-        new_chat_history = chat_history + [{"role": "assistant", "content": response}]
-        return new_chat_history
+        ag = QueryAgent()
+        all_tables = {}
 
-    # Accumula tutti i testi integrati per i file PDF selezionati
-    context = ""
+        for file_idx, file in enumerate(docs_list):
 
-    for file in docs_list:
+            pdf_name = os.path.join(os.path.abspath(os.getcwd()), "reports", file + ".pdf")
 
-        pdf_name = os.path.join(os.path.abspath(os.getcwd()), "reports", file + ".pdf")
+            try:
+                subprocess.run(
+                    [sys.executable, "main.py", "--pdf", pdf_name, "--query", user_message, "--use_ensemble"],
+                    shell=False, check=True, env=env, capture_output=True, text=True
+                )
+            except subprocess.CalledProcessError as e:
+                return [{"role": "assistant", "content": f"⚠️ Error during PDF processing:\n{e.stderr}"}]
+
+            metadata_path = os.path.join("table_dataset", file, "verbal_questions_metadata.json")
+            if not os.path.exists(metadata_path):
+                return [{"role": "assistant", "content": f"⚠️ No metadata.json found for {file}"}]
+
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            file_tables = []
+            folder_path = os.path.join("table_dataset", file)
+
+            refs = metadata[user_message]
+
+            for page, num in refs:
+
+                #Cerca i CSV della cartella
+                csv_file = os.path.join("table_dataset", file, f"{page}_{num}.csv")
+                if os.path.exists(csv_file):
+                    try:
+                        df = pd.read_csv(csv_file, sep=";")
+                        file_tables.append(df)
+                    except Exception:
+                        print(f"DEBUG: errore durante lettura CSV {csv_file}")
+
+            if len(file_tables) > 0:
+                all_tables[file_idx] = file_tables
+
+        # Se non ha trovato nessuna tabella
+        if not all_tables:
+            response = "⚠️ No tables found in the selected PDFs."
+            return chat_history + [{"role": "assistant", "content": response}]
+
+        # Prepara i testi associati (uno per ciascun blocco di tabelle)
+        texts = [
+            "Per rispondere alla domanda, considera i dati riportati nelle tabelle " +
+            " e ".join([f"<Table{i + 1}>" for i in range(len(all_tables[0]))]) +
+            " e analizza i valori principali. Non tutte le tabelle hannno i valori necessari per rispondere alla domanda",
+        ]
 
         try:
-            subprocess.run(
-                [sys.executable, "main.py", "--pdf", pdf_name, "--query", user_message, "--use_ensemble"],
-                shell=False, check=True, env=env, capture_output=True, text=True
-            )
-        except subprocess.CalledProcessError as e:
-            return [{"role": "assistant", "content": f"⚠️ Error during PDF processing:\n{e.stderr}"}]
+            result = ag.query(user_message, all_tables, texts)
+        except Exception as e:
+            result = f"⚠️ Error during QueryAgent execution: {e}"
 
-        # Recupero metadata.json
-        metadata_path = os.path.join("table_dataset", file, "verbal_questions_metadata.json")
-        if not os.path.exists(metadata_path):
-            return [{"role": "assistant", "content": f"⚠️ No metadata.json found for {file}"}]
+        return chat_history + [{"role": "assistant", "content": result}]
 
-        with open(metadata_path, "r", encoding="utf-8") as f:
-            metadata = json.load(f)
+    # === CASO 2: flusso standard ===
+    else:
+        context = ""
 
-        # Trovo la domanda esatta e i riferimenti
-        if user_message not in metadata:
-            context += f"⚠️ No references found for query '{user_message}' in {file}\n"
-            continue
+        for file in docs_list:
+            pdf_name = os.path.join(os.path.abspath(os.getcwd()), "reports", file + ".pdf")
 
-        refs = metadata[user_message]
-        combined_text = ""
-        pages = []
+            try:
+                subprocess.run(
+                    [sys.executable, "main.py", "--pdf", pdf_name, "--query", user_message, "--use_ensemble"],
+                    shell=False, check=True, env=env, capture_output=True, text=True
+                )
+            except subprocess.CalledProcessError as e:
+                return [{"role": "assistant", "content": f"⚠️ Error during PDF processing:\n{e.stderr}"}]
 
-        for page, num in refs:
-            if page not in pages:
-                # === Leggi il file TXT della pagina ===
-                txt_path = os.path.join("table_dataset", file, f"{page}.txt")
-                if not os.path.exists(txt_path):
-                    print(f"DEBUG: Missing TXT file {txt_path}")
-                    continue
+            metadata_path = os.path.join("table_dataset", file, "verbal_questions_metadata.json")
+            if not os.path.exists(metadata_path):
+                return [{"role": "assistant", "content": f"⚠️ No metadata.json found for {file}"}]
 
-                with open(txt_path, "r", encoding="utf-8") as f:
-                    txt_content = f.read()
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
 
-                # === Sostituisci i placeholder con le tabelle CSV ===
-                placeholders = re.findall(r'\[TABLEPLACEHOLDER\s*(\d+)]', txt_content)
+            if user_message not in metadata:
+                context += f"⚠️ No references found for query '{user_message}' in {file}\n"
+                continue
 
-                for placeholder_num in placeholders:
-                    csv_file = os.path.join("table_dataset", file, f"{page}_{placeholder_num}.csv")
+            refs = metadata[user_message]
+            combined_text = ""
+            pages = []
 
-                    if os.path.exists(csv_file):
-                        try:
-                            df = pd.read_csv(csv_file, sep=';')
-                            table_str = f"\n[Table from page {page}, num {placeholder_num}]\n" + df.to_csv(index=False)
-                        except Exception:
-                            print(f"DEBUG: errore durante lettura CSV {csv_file}")
+            for page, num in refs:
+
+                # print("pages: ", pages)
+
+                if page not in pages:
+                    txt_path = os.path.join("table_dataset", file, f"{page}.txt")
+                    if not os.path.exists(txt_path):
+                        print(f"DEBUG: Missing TXT file {txt_path}")
+                        continue
+
+                    with open(txt_path, "r", encoding="utf-8") as f:
+                        txt_content = f.read()
+
+                    placeholders = re.findall(r'\[TABLEPLACEHOLDER\s*(\d+)]', txt_content)
+                    for placeholder_num in placeholders:
+                        csv_file = os.path.join("table_dataset", file, f"{page}_{placeholder_num}.csv")
+                        if os.path.exists(csv_file):
+                            try:
+                                df = pd.read_csv(csv_file, sep=";")
+                                table_str = f"\n[Table from page {page}, num {placeholder_num}]\n" + df.to_csv(index=False)
+                            except Exception:
+                                print(f"DEBUG: errore durante lettura CSV {csv_file}")
+                                table_str = ""
+                        else:
                             table_str = ""
-                    else:
-                        # Nessuna tabella → rimuovo placeholder
-                        table_str = ""
+                        txt_content = re.sub(rf'\[TABLEPLACEHOLDER\s*{placeholder_num}]', table_str, txt_content)
 
-                    # Sostituisci nel testo
-                    txt_content = re.sub(
-                        rf'\[TABLEPLACEHOLDER\s*{placeholder_num}]',
-                        table_str,
-                        txt_content
-                    )
+                    combined_text += f"\n---\n# Page {page}\n{txt_content}\n"
+                    pages.append(page)
 
-                combined_text += f"\n---\n# Page {page}\n{txt_content}\n"
-                pages.append(page)
+            header = f"Company name: {file}\n"
+            context += f"{header}\n{combined_text}\n---\n"
 
+        message = [
+            messages[0],  # system
+            {
+                "role": "user",
+                "content": messages[1]["content"].format(
+                    context=context,
+                    user_message=user_message
+                ),
+            },
+        ]
 
-        # === Aggiungi al contesto ===
-        header = f"File name: {file}\n"
-        context += f"{header}\n{combined_text}\n---\n"
-
-    message = [
-        messages[0],  # system invariato
-        {
-            "role": "user",
-            "content": messages[1]["content"].format(
-                context=context,
-                user_message=user_message
-            )
-        }
-    ]
-
-    response = llm.ask_openai(message)
-
-    # === 6️⃣ Aggiorna la chat ===
-    new_chat_history = chat_history + [{"role": "assistant", "content": response}]
-    return new_chat_history
+        response = llm.ask_openai(message)
+        return chat_history + [{"role": "assistant", "content": response}]
 
 
 # ---------------------------
 # Card rendering con classi
 # ---------------------------
+
+
 def make_card_html(company_name, summary_text):
     # markdown2 produce HTML; lo inseriamo dentro il contenitore .card-content
     return f"""
@@ -289,11 +332,8 @@ def make_card_html(company_name, summary_text):
 
 def add_cards(files):
     """Aggiunge le card relative ai file appena caricati e ricarica la vista dalle risorse sul disco/DB."""
-    if not files:
-        return render_cards()
+    return render_cards()
 
-    else:
-        pass
 
 
 def render_cards_from_dict(companies_dict):
@@ -306,7 +346,7 @@ def render_cards_from_dict(companies_dict):
 
 
 def render_cards():
-    # Rilegge la lista attuale di documenti dalla sorgente (DB / filesystem)
+    # Rilegge la lista attuale di documenti dalla sorgente DB
     companies = gradio_actions.get_docs_from_db()
     companies_dict = load_companies_with_summary(companies)
     return render_cards_from_dict(companies_dict)
@@ -320,6 +360,7 @@ with gr.Blocks() as chatbot_ui:
     with gr.Row():
         # Colonna sinistra → Chat
         with gr.Column(scale=3):
+
             chatbot = gr.Chatbot(
                 elem_id="chatbot",
                 type="messages",
@@ -352,7 +393,7 @@ with gr.Blocks() as chatbot_ui:
                 )
             with gr.Row(elem_id="row_toggle"):
                 select_pot = Toggle(
-                    elem_id='PoT',
+                    elem_id='select_pot',
                     label='PoT',
                     show_label=False,
                     info='PoT',
@@ -384,10 +425,20 @@ with gr.Blocks() as chatbot_ui:
     def disable_textbox():
         return gr.update(interactive=False)
 
+    # Disabilita il toggle quando l'utente invia
+
+    def disable_toggle():
+        return gr.update(interactive=False)
+
 
     # Riabilita il textbox quando il bot ha finito
 
     def enable_textbox():
+        return gr.update(interactive=True)
+
+    # Riabilita il toggle quando il bot ha finito
+
+    def enable_toggle():
         return gr.update(interactive=True)
 
 
@@ -409,6 +460,12 @@ with gr.Blocks() as chatbot_ui:
         outputs=[chat_input]
     )
 
+    # Subito dopo l’invio → disabilita toggle
+    chat_msg.then(
+        disable_toggle,
+        outputs=[select_pot]
+    )
+
     # Bot risponde usando anche la selezione dei documenti
     bot_msg = chat_msg.then(
         handle_chat_with_pdf,
@@ -425,6 +482,12 @@ with gr.Blocks() as chatbot_ui:
     bot_msg.then(
         enable_textbox,
         outputs=[chat_input]
+    )
+
+    # Riabilita il toggle quando il bot ha finito
+    bot_msg.then(
+        enable_toggle,
+        outputs=[select_pot]
     )
 
     # Pulizia textbox
@@ -530,7 +593,8 @@ if __name__ == "__main__":
     with gr.Blocks(
             theme='lone17/kotaemon',
             title="GRI-QA demo",
-            css_paths="style.css"  # <-- qui iniettiamo TUTTO il CSS definito sopra
+            css_paths="style.css",
+
     ) as demo:
         gr.TabbedInterface(
             [chatbot_ui, process_file_ui, company_cards],
